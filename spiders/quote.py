@@ -6,7 +6,7 @@ import time
 class QuoteSpider(scrapy.Spider):
     name = "quote"
     allowed_domains = ["www.webmd.com"]
-    start_urls = ["https://reviews.webmd.com/vitamins-supplements/ingredientreview-794-5-htp?conditionid=&sortval=1&page=1"]
+    start_urls = ["https://reviews.webmd.com/vitamins-supplements/ingredientreview-794-5-htp"]
     review_list = []
 
     def parse(self, response, **kwargs):
@@ -19,13 +19,10 @@ class QuoteSpider(scrapy.Spider):
         for date, detail, score, review in zip(dates, details, scores, reviews):
             self.review_list.append({"date": date, "detail": detail, 'score': score, "review": review})
 
-
-        next_page_link = response.css('a.page-link:contains("next_page=true")::attr(href)').get()
-        time.sleep(5)
+        next_page_link = response.css('a.page-link::attr(href)').get()
         if next_page_link:
             next_page_url = response.urljoin(next_page_link)
-            yield scrapy.Request(next_page_url, callback=self.parse, dont_filter=True)
-
+            yield scrapy.Request(next_page_url, callback=self.parse)
 
     def close(self, reason):
         # Создание DataFrame с данными отзывов
