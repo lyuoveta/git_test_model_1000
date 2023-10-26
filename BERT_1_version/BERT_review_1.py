@@ -6,12 +6,13 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from transformers import BertTokenizerFast as BertTokenizer, BertModel, AdamW, get_linear_schedule_with_warmup
 import pytorch_lightning as pl
-from torchmetrics.functional import auroc
-
+from torchmetrics.functional import accuracy, auroc
+from torchmetrics import F1Score
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 from pytorch_lightning.loggers import TensorBoardLogger
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, multilabel_confusion_matrix
+from sklearn import metrics
 import seaborn as sns
 from pylab import rcParams
 import matplotlib.pyplot as plt
@@ -57,7 +58,7 @@ train_df = pd.concat([
   train_incorrect,
   train_correct.sample(200)
 ])
-train_df.shape, val_df.shape
+print(train_df.shape, val_df.shape)
 
 # Tokenization
 BERT_MODEL_NAME = 'bert-base-cased'
@@ -72,38 +73,32 @@ print()
 print(sample_labels.to_dict())
 
 encoding = tokenizer.encode_plus(
-  sample_comment,
-  add_special_tokens=True,
-  max_length=512,
-  return_token_type_ids=False,
-  padding="max_length",
-  return_attention_mask=True,
-  return_tensors='pt',
-)
+    sample_comment,
+    add_special_tokens=True,
+    max_length=512,
+    return_token_type_ids=False,
+    padding="max_length",
+    return_attention_mask=True,
+    return_tensors='pt',
+  )
 encoding.keys()
-print(encoding.keys())  # delete
-
-encoding["input_ids"].shape, encoding["attention_mask"].shape
-print(encoding["input_ids"].shape)  # delete
-print(encoding["attention_mask"].shape)  # delete
-
-encoding["input_ids"].squeeze()[:20]
-encoding["attention_mask"].squeeze()[:20]
-print(encoding["input_ids"].squeeze()[:20])  # delete
-print(encoding["attention_mask"].squeeze()[:20])  # delete
-
+print(encoding.keys())
+print(encoding["input_ids"].shape)
+print(encoding["attention_mask"].shape)
+print(encoding["input_ids"].squeeze()[:20])
+print(encoding["attention_mask"].squeeze()[:20])
 print(tokenizer.convert_ids_to_tokens(encoding["input_ids"].squeeze())[:20])
 # the end of the example
 
 # the number of tokens per comment
 token_counts = []
 for _, row in train_df.iterrows():
-  token_count = len(tokenizer.encode(
-    row["reviews"],
-    max_length=512,
-    truncation=True
-  ))
-  token_counts.append(token_count)
+    token_count = len(tokenizer.encode(
+      row["reviews"],
+      max_length=512,
+      truncation=True
+    ))
+    token_counts.append(token_count)
 sns.histplot(token_counts)
 plt.xlim([0, 512])
 plt.show()
@@ -111,40 +106,44 @@ plt.show()
 MAX_TOKEN_COUNT = 512
 
 # Dataset
+warnings.filterwarnings("ignore", category=FutureWarning)
+
+
 class CorrectReviewsDataset(Dataset):
-  def __init__(
-    self,
-    data: pd.DataFrame,
-    tokenizer: BertTokenizer,
-    max_token_len: int = 128
-  ):
-    self.tokenizer = tokenizer
-    self.data = data
-    self.max_token_len = max_token_len
-  def __len__(self):
-    return len(self.data)
-  def __getitem__(self, index: int):
-    data_row = self.data.iloc[index]
-    reviews = data_row.reviews
-    labels = data_row[LABEL_COLUMNS]
-    encoding = self.tokenizer.encode_plus(
-      reviews,
-      add_special_tokens=True,
-      max_length=self.max_token_len,
-      return_token_type_ids=False,
-      padding="max_length",
-      truncation=True,
-      return_attention_mask=True,
-      return_tensors='pt',
-    )
-    return dict(
-      reviews=reviews,
-      input_ids=encoding["input_ids"].flatten(),
-      attention_mask=encoding["attention_mask"].flatten(),
-      #labels = torch.FloatTensor(labels.iloc[0]) #debug but tensor([])
-      #labels = torch.FloatTensor(labels)
-      labels = torch.FloatTensor(labels.iloc[:])
-    )
+    def __init__(
+      self,
+      data: pd.DataFrame,
+      tokenizer: BertTokenizer,
+      max_token_len: int = 128
+    ):
+      self.tokenizer = tokenizer
+      self.data = data
+      self.max_token_len = max_token_len
+    def __len__(self):
+      return len(self.data)
+    def __getitem__(self, index: int):
+      data_row = self.data.iloc[index]
+      reviews = data_row.reviews
+      labels = data_row[LABEL_COLUMNS]
+      encoding = self.tokenizer.encode_plus(
+        reviews,
+        add_special_tokens=True,
+        max_length=self.max_token_len,
+        return_token_type_ids=False,
+        padding="max_length",
+        truncation=True,
+        return_attention_mask=True,
+        return_tensors='pt',
+        )
+      return dict(
+        reviews=reviews,
+        input_ids=encoding["input_ids"].flatten(),
+        attention_mask=encoding["attention_mask"].flatten(),
+        #labels = torch.FloatTensor(labels.iloc[0]) #debug but tensor([])
+        #labels = torch.FloatTensor(labels)
+        labels=torch.FloatTensor(labels.iloc[:])
+      )
+
 
 # a sample item from the dataset
 train_dataset = CorrectReviewsDataset(
@@ -160,18 +159,19 @@ print(sample_item["labels"])
 print(sample_item["input_ids"].shape)
 
 
-warnings.filterwarnings("ignore", category=FutureWarning)
-
 # BERT
-if __name__ == '__main__':
-     bert_model = BertModel.from_pretrained(BERT_MODEL_NAME, return_dict=True)
-     sample_batch = next(iter(DataLoader(train_dataset, batch_size=8, num_workers=2)))
-     print(sample_batch["input_ids"].shape, sample_batch["attention_mask"].shape)
-     output = bert_model(sample_batch["input_ids"], sample_batch["attention_mask"])
-     print(output.last_hidden_state.shape, output.pooler_output.shape)
-     print(bert_model.config.hidden_size)
+BERT_MODEL_NAME = 'bert-base-cased'
+tokenizer = BertTokenizer.from_pretrained(BERT_MODEL_NAME)
+bert_model = BertModel.from_pretrained(BERT_MODEL_NAME, return_dict=True)
+sample_batch = next(iter(DataLoader(train_dataset, batch_size=8, num_workers=0)))  # must be 2 num_workers
+print(sample_batch["input_ids"].shape, sample_batch["attention_mask"].shape)
+output = bert_model(sample_batch["input_ids"], sample_batch["attention_mask"])
+print(output.last_hidden_state.shape, output.pooler_output.shape)
+print(bert_model.config.hidden_size)
 
 # custom dataset into a LightningDataModule
+
+
 class CorrectReviewsDataModule(pl.LightningDataModule):
   def __init__(self, train_df, test_df, tokenizer, batch_size=8, max_token_len=128):
     super().__init__()
@@ -211,6 +211,7 @@ class CorrectReviewsDataModule(pl.LightningDataModule):
       num_workers=2
     )
 
+
 # an instance of data module
 N_EPOCHS = 10
 BATCH_SIZE = 12
@@ -224,69 +225,70 @@ data_module = CorrectReviewsDataModule(
 
 # MODEL
 class CorrectReviewsTagger(pl.LightningModule):
-  def __init__(self, n_classes: int, n_training_steps=None, n_warmup_steps=None):
-    super().__init__()
-    self.bert = BertModel.from_pretrained(BERT_MODEL_NAME, return_dict=True)
-    self.classifier = nn.Linear(self.bert.config.hidden_size, n_classes)
-    self.n_training_steps = n_training_steps
-    self.n_warmup_steps = n_warmup_steps
-    self.criterion = nn.BCELoss()
-  def forward(self, input_ids, attention_mask, labels=None):
-    output = self.bert(input_ids, attention_mask=attention_mask)
-    output = self.classifier(output.pooler_output)
-    output = torch.sigmoid(output)
-    loss = 0
-    if labels is not None:
-        loss = self.criterion(output, labels)
-    return loss, output
-  def training_step(self, batch, batch_idx):
-    input_ids = batch["input_ids"]
-    attention_mask = batch["attention_mask"]
-    labels = batch["labels"]
-    loss, outputs = self(input_ids, attention_mask, labels)
-    self.log("train_loss", loss, prog_bar=True, logger=True)
-    return {"loss": loss, "predictions": outputs, "labels": labels}
-  def validation_step(self, batch, batch_idx):
-    input_ids = batch["input_ids"]
-    attention_mask = batch["attention_mask"]
-    labels = batch["labels"]
-    loss, outputs = self(input_ids, attention_mask, labels)
-    self.log("val_loss", loss, prog_bar=True, logger=True)
-    return loss
-  def test_step(self, batch, batch_idx):
-    input_ids = batch["input_ids"]
-    attention_mask = batch["attention_mask"]
-    labels = batch["labels"]
-    loss, outputs = self(input_ids, attention_mask, labels)
-    self.log("test_loss", loss, prog_bar=True, logger=True)
-    return loss
-  def training_epoch_end(self, outputs):
-    labels = []
-    predictions = []
-    for output in outputs:
-      for out_labels in output["labels"].detach().cpu():
-        labels.append(out_labels)
-      for out_predictions in output["predictions"].detach().cpu():
-        predictions.append(out_predictions)
-    labels = torch.stack(labels).int()
-    predictions = torch.stack(predictions)
-    for i, name in enumerate(LABEL_COLUMNS):
-      class_roc_auc = auroc(predictions[:, i], labels[:, i])
-      self.logger.experiment.add_scalar(f"{name}_roc_auc/Train", class_roc_auc, self.current_epoch)
-  def configure_optimizers(self):
-    optimizer = AdamW(self.parameters(), lr=2e-5)
-    scheduler = get_linear_schedule_with_warmup(
-      optimizer,
-      num_warmup_steps=self.n_warmup_steps,
-      num_training_steps=self.n_training_steps
-    )
-    return dict(
-      optimizer=optimizer,
-      lr_scheduler=dict(
-        scheduler=scheduler,
-        interval='step'
-      )
-    )
+    def __init__(self, n_classes: int, n_training_steps=None, n_warmup_steps=None):
+        super().__init__()
+        self.bert = BertModel.from_pretrained(BERT_MODEL_NAME, return_dict=True)
+        self.classifier = nn.Linear(self.bert.config.hidden_size, n_classes)
+        self.n_training_steps = n_training_steps
+        self.n_warmup_steps = n_warmup_steps
+        self.criterion = nn.BCELoss()
+    def forward(self, input_ids, attention_mask, labels=None):
+        output = self.bert(input_ids, attention_mask=attention_mask)
+        output = self.classifier(output.pooler_output)
+        output = torch.sigmoid(output)
+        loss = 0
+        if labels is not None:
+            loss = self.criterion(output, labels)
+        return loss, output
+    def training_step(self, batch, batch_idx):
+        input_ids = batch["input_ids"]
+        attention_mask = batch["attention_mask"]
+        labels = batch["labels"]
+        loss, outputs = self(input_ids, attention_mask, labels)
+        self.log("train_loss", loss, prog_bar=True, logger=True)
+        return {"loss": loss, "predictions": outputs, "labels": labels}
+    def validation_step(self, batch, batch_idx):
+        input_ids = batch["input_ids"]
+        attention_mask = batch["attention_mask"]
+        labels = batch["labels"]
+        loss, outputs = self(input_ids, attention_mask, labels)
+        self.log("val_loss", loss, prog_bar=True, logger=True)
+        return loss
+    def test_step(self, batch, batch_idx):
+        input_ids = batch["input_ids"]
+        attention_mask = batch["attention_mask"]
+        labels = batch["labels"]
+        loss, outputs = self(input_ids, attention_mask, labels)
+        self.log("test_loss", loss, prog_bar=True, logger=True)
+        return loss
+    def training_epoch_end(self, outputs):
+        labels = []
+        predictions = []
+        for output in outputs:
+            for out_labels in output["labels"].detach().cpu():
+                labels.append(out_labels)
+            for out_predictions in output["predictions"].detach().cpu():
+                predictions.append(out_predictions)
+        labels = torch.stack(labels).int()
+        predictions = torch.stack(predictions)
+        for i, name in enumerate(LABEL_COLUMNS):
+            class_roc_auc = auroc(predictions[:, i], labels[:, i])
+            self.logger.experiment.add_scalar(f"{name}_roc_auc/Train", class_roc_auc, self.current_epoch)
+    def configure_optimizers(self):
+        optimizer = AdamW(self.parameters(), lr=2e-5)
+        scheduler = get_linear_schedule_with_warmup(
+            optimizer,
+            num_warmup_steps=self.n_warmup_steps,
+            num_training_steps=self.n_training_steps
+        )
+        return dict(
+            optimizer=optimizer,
+            lr_scheduler=dict(
+            scheduler=scheduler,
+            interval='step'
+            )
+        )
+
 
 # Optimizer scheduler
 dummy_model = nn.Linear(2, 1)
@@ -300,9 +302,9 @@ scheduler = get_linear_schedule_with_warmup(
 )
 learning_rate_history = []
 for step in range(total_training_steps):
-  optimizer.step()
-  scheduler.step()
-  learning_rate_history.append(optimizer.param_groups[0]['lr'])
+    optimizer.step()
+    scheduler.step()
+    learning_rate_history.append(optimizer.param_groups[0]['lr'])
 plt.plot(learning_rate_history, label="learning rate")
 plt.axvline(x=warmup_steps, color="red", linestyle=(0, (5, 10)), label="warmup end")
 plt.legend()
@@ -311,7 +313,7 @@ plt.ylabel("Learning rate")
 plt.tight_layout()
 plt.show()
 
-steps_per_epoch=len(train_df) // BATCH_SIZE
+steps_per_epoch = len(train_df) // BATCH_SIZE
 total_training_steps = steps_per_epoch * N_EPOCHS
 warmup_steps = total_training_steps // 5
 print(warmup_steps, total_training_steps)
@@ -334,6 +336,44 @@ labels = torch.FloatTensor(
 print(torch.sigmoid(prediction))
 print(criterion(torch.sigmoid(prediction), labels))
 
-predictions = model(sample_item["input_ids"], sample_item["attention_mask"])
+_, predictions = model(sample_batch["input_ids"], sample_batch["attention_mask"])
 print(predictions)
 print(criterion(predictions, sample_batch["labels"]))
+
+# ROC Curve
+fpr = [0.        , 0.        , 0.        , 0.02857143, 0.02857143,
+       0.11428571, 0.11428571, 0.2       , 0.4       , 1.        ]
+tpr = [0.        , 0.01265823, 0.67202532, 0.76202532, 0.91468354,
+       0.97468354, 0.98734177, 0.98734177, 1.        , 1.        ]
+_, ax = plt.subplots()
+ax.plot(fpr, tpr, label="ROC")
+ax.plot([0.05, 0.95], [0.05, 0.95], transform=ax.transAxes, label="Random classifier", color="red")
+ax.legend(loc=4)
+ax.set_xlabel("False positive rate")
+ax.set_ylabel("True positive rate")
+ax.set_title("Example ROC curve")
+plt.show()
+
+# Training
+checkpoint_callback = ModelCheckpoint(
+  dirpath="checkpoints",
+  filename="best-checkpoint",
+  save_top_k=1,
+  verbose=True,
+  monitor="val_loss",
+  mode="min"
+)
+
+logger = TensorBoardLogger("lightning_logs", name="correct-reviews")
+
+early_stopping_callback = EarlyStopping(monitor='val_loss', patience=2)
+
+trainer = pl.Trainer(
+  logger=logger,
+  callbacks=[early_stopping_callback, checkpoint_callback],
+  max_epochs=N_EPOCHS,
+  accelerator=None,  # changed, needed CUDA!
+  progress_bar_refresh_rate=30
+)
+
+#trainer.fit(model, data_module)
