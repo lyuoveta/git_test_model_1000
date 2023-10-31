@@ -22,10 +22,15 @@ multiprocessing.freeze_support()
 import warnings
 
 
+
 df = pd.read_csv("tagged_data.csv")
 
 # deleting additional information
-df = df.drop([df.columns[0], df.columns[2], df.columns[3], df.columns[4]], axis=1)
+df = df.drop([df.columns[0], df.columns[2], df.columns[3], df.columns[4],df.columns[6], df.columns[7], df.columns[8],
+              df.columns[9], df.columns[10], df.columns[11],df.columns[12], df.columns[13], df.columns[14],df.columns[15],
+              df.columns[16], df.columns[17], df.columns[18], df.columns[19], df.columns[20], df.columns[21], df.columns[22],
+             df.columns[23],df.columns[24], df.columns[25], df.columns[26],df.columns[27], df.columns[28], df.columns[29],df.columns[30],
+              df.columns[31], df.columns[32], df.columns[33], df.columns[36]], axis=1)
 print(df.head())
 
 # split data
@@ -38,8 +43,8 @@ df[LABEL_COLUMNS].sum().sort_values().plot(kind="barh")
 plt.show()
 
 # the distribution of the correct and incorrect tags
-train_correct = train_df[train_df.iloc[:, 30] == 1]
-train_incorrect = train_df[train_df.iloc[:, 31] == 1]
+train_correct = train_df[train_df.iloc[:, 2] == 1]
+train_incorrect = train_df[train_df.iloc[:, 3] == 1]
 pd.DataFrame(dict(
   correct=[len(train_correct)],
   incorrect=[len(train_incorrect)]
@@ -47,10 +52,10 @@ pd.DataFrame(dict(
 plt.show()
 
 # output of data quantity
-count_ones = len(train_df[train_df.iloc[:, 30] == 1])
-count_ones_2 = len(train_df[train_df.iloc[:, 31] == 1])
-column_name = train_df.columns[30]
-column_name_2 = train_df.columns[31]
+count_ones = len(train_df[train_df.iloc[:, 2] == 1])
+count_ones_2 = len(train_df[train_df.iloc[:, 3] == 1])
+column_name = train_df.columns[2]
+column_name_2 = train_df.columns[3]
 print(column_name, count_ones, column_name_2, count_ones_2)
 
 # sample only 200 correct reviews to combat the imbalance
@@ -196,19 +201,19 @@ class CorrectReviewsDataModule(pl.LightningDataModule):
       self.train_dataset,
       batch_size=self.batch_size,
       shuffle=True,
-      num_workers=2
+      num_workers=0
     )
   def val_dataloader(self):
     return DataLoader(
       self.test_dataset,
       batch_size=self.batch_size,
-      num_workers=2
+      num_workers=0
     )
   def test_dataloader(self):
     return DataLoader(
       self.test_dataset,
       batch_size=self.batch_size,
-      num_workers=2
+      num_workers=0
     )
 
 
@@ -291,7 +296,9 @@ class CorrectReviewsTagger(pl.LightningModule):
 
 
 # Optimizer scheduler
-dummy_model = nn.Linear(2, 1)
+dummy_model = nn.Linear(10, 1)
+for param in dummy_model.parameters():
+    param.requires_grad = True
 optimizer = AdamW(params=dummy_model.parameters(), lr=0.001)
 warmup_steps = 20
 total_training_steps = 100
@@ -319,7 +326,7 @@ warmup_steps = total_training_steps // 5
 print(warmup_steps, total_training_steps)
 
 # an instance of the model
-model = CorrectReviewsTagger(
+model: CorrectReviewsTagger = CorrectReviewsTagger(
   n_classes=len(LABEL_COLUMNS),
   n_warmup_steps=warmup_steps,
   n_training_steps=total_training_steps
@@ -355,6 +362,7 @@ ax.set_title("Example ROC curve")
 plt.show()
 
 # Training
+
 checkpoint_callback = ModelCheckpoint(
   dirpath="checkpoints",
   filename="best-checkpoint",
@@ -376,4 +384,29 @@ trainer = pl.Trainer(
   progress_bar_refresh_rate=30
 )
 
-#trainer.fit(model, data_module)
+trainer.fit(model, data_module)
+
+trainer.test()
+
+
+# Predictions
+trained_model = CorrectReviewsTagger.load_from_checkpoint(
+  trainer.checkpoint_callback.best_model_path,
+  n_classes=len(LABEL_COLUMNS)
+)
+trained_model.eval()
+trained_model.freeze()
+test_comment = "I have been taking rhodiola for over a year.  It works great for reducing general anxiety.  If I go longer than two days without it, I get an inner jitteriness and feelings of doom.  I have noticed no side effects."
+encoding = tokenizer.encode_plus(
+  test_comment,
+  add_special_tokens=True,
+  max_length=512,
+  return_token_type_ids=False,
+  padding="max_length",
+  return_attention_mask=True,
+  return_tensors='pt',
+)
+_, test_prediction = trained_model(encoding["input_ids"], encoding["attention_mask"])
+test_prediction = test_prediction.flatten().numpy()
+for label, prediction in zip(LABEL_COLUMNS, test_prediction):
+  print(f"{label}: {prediction}")
